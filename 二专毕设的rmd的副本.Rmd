@@ -1,0 +1,178 @@
+---
+title: "erzhuan"
+author: "yilinlin"
+date: "2/19/2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+##导入数据
+```{r setup, include=FALSE}
+ex <- readxl::read_excel("exchange.xlsx",col_names = TRUE)
+index <- readxl::read_excel("index.xlsx",col_names = TRUE)
+ex <- as.data.frame(ex)
+ex <- ex[-3256,]#删掉有利率没有上证综合指数的一天
+index <- as.data.frame(index)
+shangzheng <- subset(index,Indexcd<2)
+ex$Exchdt <- as.Date(ex$Exchdt)
+colnames(ex)[1] <- "date"
+shangzheng$Trddt <- as.Date(shangzheng$Trddt)
+colnames(shangzheng)[2] <- "date"
+erzhuan <- cbind(shangzheng,ex)
+erzhuan <- erzhuan[,c(2,3,6)]
+colnames(erzhuan) <- c("date","SZ","CNYUSD")
+```
+
+##描述性分析
+```{r }
+library("lmtest")
+unrestricted1<-lm(erzhuan$CNYUSD~erzhuan$date)
+bptest(unrestricted1)
+unrestricted_1<-lm(log(erzhuan$SZ)~erzhuan$date)
+bptest(unrestricted_1)
+#-----下面为汇率
+unrestricted_2<-lm(erzhuan$CNYUSD~erzhuan$date)
+bptest(unrestricted_2)
+unrestricted2<-lm(log(erzhuan$CNYUSD)~erzhuan$date)
+bptest(unrestricted2)#汇率对数变化后不存在异方差，汇率采用ADF检验
+#---下面为描述分析
+attach(erzhuan)
+library("fBasics","ggplot2")
+library("ggplot2")
+qplot(y=SZ,x=date,data = erzhuan,geom = "line")+
+  scale_x_date(date_breaks = "1 year",date_labels = "%Y")+
+  scale_y_continuous(breaks =seq(0,7000,1000))+
+  theme_bw()+theme(panel.grid=element_blank(),axis.text.x = element_text(angle = 60, hjust = 1))
+summary(SZ)#平均数，中位数，最大值最小值
+erzhuan[which.min(SZ),]
+erzhuan[which.max(SZ),]
+sd(SZ)#标准差
+skewness(SZ)#偏度
+kurtosis(SZ)#峰度
+jarqueberaTest(SZ)#P<0,不服从正态分布
+qplot(y=CNYUSD,x=date,data = erzhuan,geom = "line")+
+  scale_x_date(date_breaks = "1 year",date_labels = "%Y")+
+  scale_y_continuous(breaks =seq(0,8.5,0.5))+
+  theme_bw()+theme(panel.grid=element_blank(),axis.text.x = element_text(angle = 60, hjust = 1))
+summary(CNYUSD)#平均数，中位数，最大值最小值
+sd(CNYUSD)#标准差
+skewness(CNYUSD)#偏度
+kurtosis(CNYUSD)#峰度
+jarqueberaTest(CNYUSD)#P<0,不服从正态分布
+detach(erzhuan)
+```
+##构建方程
+###单位根检验
+
+```{r erzhuan}
+library("fUnitRoots")
+m1 =ar(erzhuan$SZ,method = "mle")#mle为最大似然法，还可选择“ols普通最小二乘法,yw为矩估计
+m1$order#
+adfTest(erzhuan$SZ,lags = 7,type="ct")#type"nc"无trend和constant,"c"constant,"ct"constant和trend
+m1 =ar(log(erzhuan$SZ),method = "mle")
+m1$order#
+adfTest(log(erzhuan$SZ),lags = 10,type = "c")
+m1 =ar(diff(log(erzhuan$SZ)),method = "mle")
+m1$order#
+adfTest(diff(log(erzhuan$SZ)),lags = 7,type = "nc")
+##下面为CNYUSD检验-----------------------------------
+m2 =ar(erzhuan$CNYUSD,method = "ols")#mle为最大似然法，还可选择“ols普通最小二乘法,yw为矩估计
+m2$order#滞后阶数为21
+m2$aic
+adfTest(erzhuan$CNYUSD,lags = 21,type = "c")#type"nc"表示无时间趋势和常数项，"c"表示常数项（默认），"ct"表示有常数项和时间趋势
+m2 =ar(log(erzhuan$CNYUSD),method = "ols")
+m2$order#
+adfTest(log(erzhuan$CNYUSD),lags = 21,type = "c")
+m2 =ar(diff(log(erzhuan$CNYUSD)),method = "ols")
+m2$order#
+adfTest(diff(log(erzhuan$CNYUSD)),lags = 20,type = "nc")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+###协整检验
+```{r urca}
+library("urca","MTS","fUnitRoots")
+bnd=erzhuan[,2:3]
+bnd$SZ <- log(bnd$SZ)
+bnd$CNYUSD <- log(bnd$CNYUSD)
+m3 = MTS::VARorder(bnd)#滞后阶数为2
+pacf(bnd[,1])#p选择1
+pacf(bnd[,2])#p选择2
+adfTest(bnd[,1],lags = 1,type ="c" )# P= 0.1258 
+adfTest(bnd[,2],lags = 2,type ="c" )#P=0.03949  
+m3=ca.jo(bnd[,c(2,1)],K=2,ecdet= c("const"),type = c("eigen"),spec = c("transitory"))#用的是5-67方程
+summary(m3)
+wt = bnd[,1] -8.644073*bnd[,2]+8.252418#协整序列
+wt2=bnd[,2]-0.1156862*bnd[,1]-0.9546910
+adfTest(wt,lags = 2,type = "c")
+```
+###Granger 因果效应
+```{r }
+library("lmtest")
+grangertest(SZ~CNYUSD,order = 2,data = bnd)
+grangertest(CNYUSD~SZ,order = 2,data = bnd)
+```
+##误差修正模型
+```{r}
+library("MTS","xts","urca")
+dd1=diff(bnd$SZ,lag = 1)
+dd2=diff(bnd$CNYUSD,lag = 1)
+qt=head(wt,-1)
+qt2=head(wt2,-1)
+ecmdata=data.frame(dy=dd1,dx=dd2,error.term=qt)#汇率对股市的影响
+ecm=lm(dd1~dd2+qt,data=ecmdata)
+ecmdata=data.frame(dy=dd2,dx=dd1,error.term=qt2)#股市对汇率的影响
+ecm2=lm(dd2~dd1+qt2,data=ecmdata)
+summary(ecm2)
+```
+##脉冲响应函数
+```{r}
+library("vars","ggplot2")
+temp = VAR(bnd,2,type ="const" )
+summary(temp)
+plot(irf(temp,impulse = "CNYUSD",response = "CNYUSD"))
+plot(irf(temp,impulse = "SZ",response = "CNYUSD"))
+plot(irf(temp,impulse = "CNYUSD",response = "SZ"))
+plot(irf(temp,impulse = "SZ",response = "SZ"))
+```
+##分阶段实证chow检验
+```{r}
+library("strucchange")
+breakpoints(Fstats(wt~ 1))
+breakpoints(Fstats(wt2~ 1))
+erzhuan[531,]
+qplot(y=SZ,x=date,data = erzhuan,geom = "line")+
+  scale_x_date(date_breaks = "1 year",date_labels = "%Y")+
+  scale_y_continuous(breaks =seq(0,7000,1000))+
+  theme_bw()+theme(panel.grid=element_blank(),axis.text.x = element_text(angle = 60, hjust = 1))+geom_vline(xintercept=as.numeric(erzhuan$date[531]),linetype=4,color="red")+annotate("text", x=c(erzhuan$date[180],erzhuan$date[1200]), y=4500, label=c("stage I","stageII"),family= "Times", size=10)
+stage1 <- bnd[1:531,]
+stage2 <- bnd[532:3543,]
+m1 =ar(stage1$CNYUSD,method = "ols")###stage1的单位根检验#
+m1$order#滞后阶数为2
+adfTest(stage1$CNYUSD,lags = 2,type="ct")#p为0.7418
+m1 =ar(diff(stage1$CNYUSD),method = "ols")
+m1$order#滞后阶数为6
+adfTest(diff(stage1$CNYUSD),lags = 1,type = "nc")
+m1 =ar(stage2$CNYUSD,method = "ols")###stage2的单位根检验
+m1$order#滞后阶数为9
+adfTest(stage2$CNYUSD,lags = 9,type="ct")#p为0.7418
+m1 =ar(diff(stage2$CNYUSD),method = "ols")
+m1$order#滞后阶数为8
+adfTest(diff(stage2$CNYUSD),lags = 8,type = "nc")
+m3 = MTS::VARorderI(stage1)#最优滞后阶数为2
+m2=ca.jo(stage1,K=2,ecdet= c("const"),type = c("eigen"),spec = c("transitory"))#Stage1
+m2=ca.jo(stage1,K=2,ecdet= c("const"),type = c("trace"),spec = c("transitory"))
+summary(m2)
+m3 = MTS::VARorderI(stage2)
+m3=ca.jo(stage2,K=2,ecdet= c("const"),type = c("eigen"),spec= "transitory")#stage2
+m3=ca.jo(stage2,K=2,ecdet= c("const"),type = c("trace"),spec = c("transitory"))
+temp=cbind(diff(stage2$SZ),diff(stage2$CNYUSD))
+colnames(temp) <- c("DSZ","DCNYUSD")
+m1 = MTS::VARorder(temp)
+p <- VAR(temp, p = 3, type = c( "none"), season = NULL, exogen = NULL, lag.max = 3,
+    ic = "AIC")
+summary(p)
+```
+
